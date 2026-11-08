@@ -274,6 +274,35 @@ def test_audit_accepts_real_inventory():
     assert len(m.audit_inventory(real_inventory(), real_config())) == 1602
 
 
+def truncated_config(depth: int):
+    cfg = real_config()
+    cfg.num_hidden_layers = depth
+    cfg.nope_layer_flags = cfg.nope_layer_flags[:depth]
+    cfg.kv_source_layers = cfg.kv_source_layers[:depth]
+    cfg.index_sharing = cfg.index_sharing[:depth]
+    return cfg
+
+
+def test_truncated_model_is_rejected_unless_explicitly_allowed(monkeypatch):
+    cfg = truncated_config(4)
+    inv = real_inventory()
+    monkeypatch.delenv(m.ALLOW_TRUNCATED_ENV, raising=False)
+    with pytest.raises(ValueError, match="layer 4 out of range"):
+        m.audit_inventory(inv, cfg)
+
+    monkeypatch.setenv(m.ALLOW_TRUNCATED_ENV, "1")
+    name_map = m.audit_inventory(inv, cfg)
+    layers = {m.map_tensor_name(n).layer for n in name_map}
+    assert layers == {None, 0, 1, 2, 3}
+    assert "rope_freqs.weight" in name_map and "output.weight" in name_map
+    # the deeper layers are not in the map, so the weight iterator never reads them
+    assert not any(n.startswith("blk.4.") for n in name_map)
+    # a GGUF with fewer layers than the config is still an error
+    short = [i for i in inv if not i.name.startswith("blk.3.")]
+    with pytest.raises(ValueError, match="layer 3: missing"):
+        m.audit_inventory(short, cfg)
+
+
 def test_targets_reach_exactly_the_model_parameters():
     """Model-side names after the PR renames == the 1342 model parameters.
 

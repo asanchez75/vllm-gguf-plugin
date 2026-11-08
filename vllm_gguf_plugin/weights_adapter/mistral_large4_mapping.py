@@ -27,6 +27,7 @@ package may not know this architecture, so the table below is explicit and no
 from __future__ import annotations
 
 import enum
+import os
 import re
 from collections import defaultdict
 from collections.abc import Iterable, Sequence
@@ -38,6 +39,11 @@ from gguf import GGMLQuantizationType, GGUFReader
 from gguf.quants import dequantize
 
 GGUF_ARCHITECTURE = "mistral-large4"
+#: Debug switch: accept a GGUF that has more layers than the config (a
+#: truncated debug model with a reduced ``num_hidden_layers``). The tensors of
+#: the deeper layers are left out of the name map, so they are never read. The
+#: model's own loader skips them as well.
+ALLOW_TRUNCATED_ENV = "VLLM_GGUF_MISTRAL_ALLOW_TRUNCATED"
 HF_MODEL_TYPE = "mistral_large_4"
 VLLM_ARCHITECTURE = "MistralLarge4ForCausalLM"
 
@@ -399,6 +405,15 @@ def audit_inventory(inventory: Sequence[TensorInfo], config: Any) -> dict[str, s
     shape mismatches, and gate/up quantization type mismatches.
     """
     problems: list[str] = []
+    if os.environ.get(ALLOW_TRUNCATED_ENV) == "1":
+        depth = config.num_hidden_layers
+        inventory = [
+            info
+            for info in inventory
+            if (mapped := map_tensor_name(info.name)) is None
+            or mapped.layer is None
+            or mapped.layer < depth
+        ]
     name_map = build_name_map(info.name for info in inventory)
 
     specs = get_layer_specs(config)
