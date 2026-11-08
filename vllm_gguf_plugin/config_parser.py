@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
+import json
 from pathlib import Path
 
 from transformers import PretrainedConfig
@@ -15,6 +16,56 @@ from .gguf_utils import (
     split_remote_gguf,
 )
 from .weights_adapter import get_adapter_architecture
+from .weights_adapter.mistral_large4_mapping import (
+    is_mistral_large4_params,
+    strip_params_for_gguf,
+)
+
+
+def _parse_mistral_large4_params(
+    config_dir: str | Path,
+) -> tuple[dict, PretrainedConfig] | None:
+    """Build the Mistral Large 4 config from ``params.json`` next to the GGUF.
+
+    The HF ``config.json`` of this model cannot be used (transformers does not
+    know ``mistral_large4`` and the file lacks the MoE/SSMax/LeRoPE fields), so
+    vLLM's Mistral-format conversion is used instead. The FP8 ``quantization``
+    block and the vision blocks are dropped in memory (the file on disk is not
+    touched) and no ``config.json`` defaults are merged: they would bring the
+    FP8 ``quantization_config`` back.
+
+    Returns ``None`` if ``config_dir`` is not a local directory with such a
+    ``params.json``.
+    """
+    params_file = Path(config_dir) / "params.json"
+    if not params_file.is_file():
+        return None
+    with open(params_file, encoding="utf-8") as f:
+        params = json.load(f)
+    if not is_mistral_large4_params(params):
+        return None
+
+    from vllm.transformers_utils.configs.mistral import adapt_config_dict
+
+    config_dict = strip_params_for_gguf(params)
+    if "max_position_embeddings" not in config_dict:
+        config_dict["max_position_embeddings"] = _read_max_positions(config_dir)
+    config = adapt_config_dict(config_dict, defaults={})
+    return config_dict, config
+
+
+def _read_max_positions(config_dir: str | Path) -> int:
+    """``max_position_embeddings`` from ``config.json`` if present, else 128000.
+
+    Only this one number is taken from ``config.json`` (vLLM's default for a
+    ``params.json`` without it is 128000).
+    """
+    try:
+        with open(Path(config_dir) / "config.json", encoding="utf-8") as f:
+            cfg = json.load(f)
+        return int((cfg.get("text_config") or cfg)["max_position_embeddings"])
+    except (OSError, KeyError, TypeError, ValueError):
+        return 128_000
 
 
 class GGUFConfigParser(ConfigParserBase):
@@ -28,6 +79,8 @@ class GGUFConfigParser(ConfigParserBase):
     ) -> tuple[dict, PretrainedConfig]:
         original_model = model
         resolved_model = self._resolve_config_source(model)
+        if (parsed := _parse_mistral_large4_params(resolved_model)) is not None:
+            return parsed
         config_dict, config = HFConfigParser().parse(
             resolved_model,
             trust_remote_code=trust_remote_code,
