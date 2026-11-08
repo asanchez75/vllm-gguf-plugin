@@ -16,6 +16,7 @@ from vllm.model_executor.layers.linear import (
     WEIGHT_LOADER_V2_SUPPORTED,
     MergedColumnParallelLinear,
     QKVParallelLinear,
+    ReplicatedLinear,
 )
 from vllm.model_executor.layers.quantization import get_quantization_config
 from vllm.model_executor.layers.vocab_parallel_embedding import VocabParallelEmbedding
@@ -113,6 +114,32 @@ def test_gguf_linear_uses_weight_loader_v2(monkeypatch):
     assert isinstance(layer.weight_type, GGUFWeightTypeParameter)
     assert layer.weight.shard_id == [0, 1]
     assert layer.weight_type.shard_weight_type == {0: 3, 1: 4}
+
+
+def test_gguf_replicated_linear_loads_packed_weights(monkeypatch):
+    """ReplicatedLinear has no weight_loader_v2 (e.g. the Mistral Large 4 indexer
+    wq_b): its legacy weight_loader must still be able to take GGUF data."""
+    register()
+    monkeypatch.setattr(parameter_module, "get_tensor_model_parallel_rank", lambda: 0)
+    monkeypatch.setattr(
+        parameter_module, "get_tensor_model_parallel_world_size", lambda: 1
+    )
+    quant_config = OOTGGUFConfig.from_config({})
+    layer = ReplicatedLinear(
+        input_size=4, output_size=8, bias=False, quant_config=quant_config
+    )
+
+    assert not hasattr(layer, "weight_loader_v2")
+    assert isinstance(layer.weight, GGUFUninitializedParameter)
+    packed = torch.arange(32, dtype=torch.uint8).reshape(8, 4)
+    layer.weight.weight_loader(layer.weight, packed)
+    layer.weight_type.weight_loader(layer.weight_type, torch.tensor(8))
+    layer.quant_method.process_weights_after_loading(layer)
+
+    assert isinstance(layer.weight, GGUFWeightParameter)
+    assert isinstance(layer.weight_type, GGUFWeightTypeParameter)
+    assert torch.equal(layer.weight.data, packed)
+    assert layer.weight_type.weight_type == 8
 
 
 def test_gguf_embedding_uses_plugin_weight_loader(monkeypatch):

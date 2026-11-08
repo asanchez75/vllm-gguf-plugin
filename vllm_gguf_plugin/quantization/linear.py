@@ -23,6 +23,7 @@ from .params import (
     _resolve_gguf_weight_loader,
     _resolve_gguf_weight_type_loader,
 )
+from .replicated import wrap_legacy_weight_loader
 from .utils import (
     DEQUANT_TYPES,
     IMATRIX_QUANT_TYPES,
@@ -105,6 +106,9 @@ class GGUFLinearMethod(LinearMethodBase):
         fallback_weight_loader = extra_weight_attrs.pop("weight_loader", None)
         weight_loader = _resolve_gguf_weight_loader(layer, fallback_weight_loader)
         assert weight_loader is not None
+        if not hasattr(layer, "weight_loader_v2"):
+            # e.g. ReplicatedLinear, whose weight_loader cannot take GGUF data
+            weight_loader = wrap_legacy_weight_loader(weight_loader)
 
         tensor_shape = (output_size_per_partition, input_size_per_partition)
         weight = GGUFUninitializedWeightParameter(requires_grad=False)
