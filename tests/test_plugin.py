@@ -126,7 +126,11 @@ def test_gguf_replicated_linear_loads_packed_weights(monkeypatch):
     )
     quant_config = OOTGGUFConfig.from_config({})
     layer = ReplicatedLinear(
-        input_size=4, output_size=8, bias=False, quant_config=quant_config
+        input_size=4,
+        output_size=8,
+        bias=False,
+        quant_config=quant_config,
+        disable_tp=True,
     )
 
     assert not hasattr(layer, "weight_loader_v2")
